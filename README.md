@@ -2,7 +2,7 @@
 
 A machine learning system that predicts whether a hotel booking will be cancelled, identifies the key drivers of cancellation risk, and delivers actionable recommendations — deployed as an interactive Streamlit web application.
 
-**Live demo:** [Add your Streamlit Cloud URL here once deployed]
+**Live demo:** [https://hotel-cancellation-prediction-7cn3s7u84sjrjkhcgki4r4.streamlit.app/]
 
 ---
 
@@ -14,7 +14,7 @@ Hotel cancellations disrupt revenue forecasting, staffing, and inventory plannin
 - **Explains** which factors drive that risk, both globally and for individual bookings
 - **Recommends** operational actions the hotel can take to reduce cancellation impact
 
-The project was completed as part of the AIMS Senegal MSc capstone (Group 4).
+The project was completed as part of the Industry Immersion capstone project (Group 4).
 
 ---
 
@@ -145,11 +145,11 @@ The app will open at `http://localhost:8501`.
 
 ## Authors
 
-Group 4 — AIMS Senegal MSc Big Data / Data Science Capstone
-Supervised by Professor Bulam Nachamada
+Group 4 — AIMS Senegal MSc Big Data / Data Science Capstone project
+conducted by Industry Immersion program (IIA)
 
 ---
 
 ## License
 
-This project was developed for academic purposes as part of the AIMS Senegal capstone program.
+This project was developed for academic purposes as part of the Industry Immersion capstone program.
