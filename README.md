@@ -14,7 +14,7 @@ Hotel cancellations disrupt revenue forecasting, staffing, and inventory plannin
 - **Explains** which factors drive that risk, both globally and for individual bookings
 - **Recommends** operational actions the hotel can take to reduce cancellation impact
 
-The project was completed as part of the AIMS Senegal MSc capstone (Group 4).
+The project was completed as part of the Industry Immersion capstone project (Group 4).
 
 ---
 
@@ -146,7 +146,7 @@ The app will open at `http://localhost:8501`.
 ## Authors
 
 Group 4 — AIMS Senegal MSc Big Data / Data Science Capstone project
-Supervised by IIP program
+conducted by Industry Immersion program (IIA)
 
 ---
 
