@@ -145,11 +145,11 @@ The app will open at `http://localhost:8501`.
 
 ## Authors
 
-Group 4 — AIMS Senegal MSc Big Data / Data Science Capstone
-Supervised by Professor Bulam Nachamada
+Group 4 — AIMS Senegal MSc Big Data / Data Science Capstone project
+Supervised by IIP program
 
 ---
 
 ## License
 
-This project was developed for academic purposes as part of the AIMS Senegal capstone program.
+This project was developed for academic purposes as part of the Industry Immersion capstone program.
