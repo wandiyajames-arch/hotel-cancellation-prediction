@@ -427,7 +427,7 @@ def make_waterfall(contrib_df, base_rate_pct=32.8):
 # SIDEBAR
 # =======================================================================
 with st.sidebar:
-    st.markdown("### 🛡️ StayShield")
+    st.markdown("### 🛡️ CancelSense ")
     st.caption("Machine Learning · Decision Support")
     st.divider()
     page = st.radio(
