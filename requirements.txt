@@ -6,3 +6,5 @@ xgboost
 joblib
 holidays
 shap
+fpdf2
+plotly
