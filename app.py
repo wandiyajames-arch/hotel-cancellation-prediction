@@ -427,8 +427,8 @@ def make_waterfall(contrib_df, base_rate_pct=32.8):
 # SIDEBAR
 # =======================================================================
 with st.sidebar:
-    st.markdown("### 🏨 CancelSense")
-    st.caption("Explainable AI · Cancellation Risk Dashboard")
+    st.markdown("### 🛡️ StayShield")
+    st.caption("Machine Learning · Decision Support")
     st.divider()
     page = st.radio(
         "Navigate",
@@ -445,14 +445,14 @@ with st.sidebar:
     )
     st.divider()
     st.caption(f"Model in use: **{best_model_name}**")
-    st.caption("AI-Powered Decisions. Smarter Hotels. More Revenue.")
+    st.caption("Data-Driven Decisions. Smarter Hotels. More Revenue.")
 
 # =======================================================================
 # PAGE: DASHBOARD (landing overview)
 # =======================================================================
 if page == "🏠 Dashboard":
     st.title("Dashboard")
-    st.caption("Explainable AI · Smarter Decisions · Higher Revenue")
+    st.caption("Machine Learning · Smarter Decisions · Higher Revenue")
 
     if dashboard_data is not None:
         m1, m2, m3, m4 = st.columns(4)
@@ -477,8 +477,8 @@ if page == "🏠 Dashboard":
 # PAGE: NEW PREDICTION (single continuous scrolling page)
 # =======================================================================
 elif page == "➕ New Prediction":
-    st.title("AI Hotel Reservation Cancellation Prediction")
-    st.caption("Explainable AI · Smarter Decisions · Higher Revenue")
+    st.title("Hotel Reservation Cancellation Prediction")
+    st.caption("Machine Learning · Smarter Decisions · Higher Revenue")
 
     with st.form("booking_form"):
         section_header("📝 New Booking Details")
@@ -604,8 +604,8 @@ elif page == "➕ New Prediction":
         else:
             st.success("✅ This reservation is low risk. No action needed at this time.")
 
-        # ---- 3. AI Explanation ----
-        section_header("3️⃣ AI Explanation — Why This Prediction?")
+        # ---- 3. Model Explanation ----
+        section_header("3️⃣ Model Explanation — Why This Prediction?")
         if contrib_df is not None:
             wf = make_waterfall(contrib_df)
             if wf is not None:
@@ -642,7 +642,7 @@ elif page == "➕ New Prediction":
                     """, unsafe_allow_html=True)
 
         # ---- 5. Recommended Actions ----
-        section_header("5️⃣ AI Recommended Actions (Ranked by Effectiveness)")
+        section_header("5️⃣ Recommended Actions (Ranked by Effectiveness)")
         ac_cols = st.columns(3)
         for i, (label, score, why) in enumerate(actions):
             with ac_cols[i % 3]:
