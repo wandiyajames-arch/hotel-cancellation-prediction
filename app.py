@@ -52,12 +52,21 @@ st.markdown("""
 .kpi-value { font-size: 1.6rem; font-weight: 700; margin: 4px 0 2px 0; }
 .kpi-sub { font-size: 0.78rem; color: #9ca3af; }
 .factor-card {
-    background: #ffffff; border-radius: 10px; padding: 14px;
-    border-left: 4px solid #d1d5db; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-    height: 100%; margin-bottom: 8px;
+    background: #ffffff; border-radius: 12px; padding: 22px 20px;
+    border-left: 6px solid #d1d5db; box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+    height: 100%; margin-bottom: 12px; min-height: 150px;
 }
 .factor-card.risk-up { border-left-color: #d73027; }
 .factor-card.risk-down { border-left-color: #1a9850; }
+.factor-card .fc-icon { font-size: 2rem; }
+.factor-card .fc-title { font-weight: 800; font-size: 1.15rem; margin: 8px 0 6px 0; color: #1a1a2e; }
+.factor-card .fc-desc { font-size: 0.95rem; color: #444; line-height: 1.4; }
+.factor-card .fc-badge {
+    display: inline-block; font-size: 0.75rem; font-weight: 700; padding: 3px 10px;
+    border-radius: 20px; margin-bottom: 8px;
+}
+.factor-card.risk-up .fc-badge { background: #fdeaea; color: #d73027; }
+.factor-card.risk-down .fc-badge { background: #e8f6ee; color: #1a9850; }
 .action-card {
     background: #ffffff; border-radius: 10px; padding: 14px;
     border: 1px solid #eaeaea; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
@@ -90,11 +99,12 @@ section[data-testid="stSidebar"] hr {
 """, unsafe_allow_html=True)
 
 
-def kpi_card(label, value, sub=""):
+def kpi_card(label, value, sub="", value_color=None):
+    color_style = f"color:{value_color};" if value_color else ""
     st.markdown(f"""
     <div class="kpi-card">
         <div class="kpi-label">{label}</div>
-        <div class="kpi-value">{value}</div>
+        <div class="kpi-value" style="{color_style}">{value}</div>
         <div class="kpi-sub">{sub}</div>
     </div>
     """, unsafe_allow_html=True)
@@ -246,12 +256,82 @@ FEATURE_EXPLANATIONS = {
     "prior_cancel_rate": ("📉", "This guest's historical cancellation rate directly informs their current risk."),
 }
 
+FRIENDLY_FEATURE_NAMES = {
+    "lead_time": "Booking Window",
+    "avg_price_per_room": "Room Rate (ADR)",
+    "no_of_special_requests": "Special Requests Made",
+    "has_special_requests": "Made a Special Request",
+    "market_segment_type": "Market Segment / Channel",
+    "repeated_guest": "Repeat Guest Status",
+    "required_car_parking_space": "Parking Requested",
+    "is_near_holiday": "Near a Public Holiday",
+    "no_of_previous_cancellations": "Prior Cancellations on File",
+    "total_nights": "Length of Stay",
+    "prior_cancel_rate": "Guest's Cancellation History",
+    "arrival_month": "Arrival Month (Seasonality)",
+    "arrival_date": "Arrival Date (Seasonality)",
+    "no_of_adults": "Number of Adults",
+    "no_of_children": "Number of Children",
+    "total_guests": "Total Guest Count",
+}
+
+
+def friendly_feature_name(feature_name):
+    clean = feature_name.replace("num__", "").replace("cat__", "")
+    for key, name in FRIENDLY_FEATURE_NAMES.items():
+        if clean.startswith(key):
+            suffix = clean[len(key):].lstrip("_").replace("_", " ")
+            return f"{name}" + (f": {suffix}" if suffix else "")
+    return clean.replace("_", " ").title()
+
 
 def explain_feature(feature_name):
     for key, (icon, text) in FEATURE_EXPLANATIONS.items():
         if key in feature_name:
             return icon, text
     return "🔎", f"{feature_name.replace('num__', '').replace('cat__', '')} contributes to this prediction."
+
+
+def interpret_confusion_matrix(cm):
+    tn, fp, fn, tp = cm.ravel()
+    total = tn + fp + fn + tp
+    correct_pct = (tn + tp) / total * 100
+    false_alarm_pct = fp / (fp + tn) * 100 if (fp + tn) > 0 else 0
+    miss_pct = fn / (fn + tp) * 100 if (fn + tp) > 0 else 0
+    return (
+        f"In plain terms: out of **{total:,} test reservations**, the system correctly identified "
+        f"**{tn:,}** bookings that were kept and **{tp:,}** bookings that were cancelled — "
+        f"**{correct_pct:.0f}% correct overall**.\n\n"
+        f"- It raised a **false alarm** on {fp:,} bookings — flagged as at-risk, but the guest actually kept the reservation "
+        f"({false_alarm_pct:.1f}% false-alarm rate). These cost staff time on unnecessary follow-up.\n"
+        f"- It **missed** {fn:,} bookings that did cancel ({miss_pct:.1f}% miss rate) — reservations that looked safe "
+        f"but fell through anyway. These are the costliest errors, since no intervention was ever triggered."
+    )
+
+
+def interpret_classification_report(report_dict):
+    cancelled = report_dict.get("Cancelled", {})
+    accuracy = report_dict.get("accuracy", None)
+    precision = cancelled.get("precision")
+    recall = cancelled.get("recall")
+    lines = []
+    if accuracy is not None:
+        lines.append(f"- **Overall accuracy ({accuracy*100:.0f}%):** out of every 100 predictions the system makes — cancel or not — about {accuracy*100:.0f} are correct.")
+    if precision is not None:
+        lines.append(f"- **Precision for 'Cancelled' ({precision*100:.0f}%):** when the system flags a reservation as likely to cancel, it's right {precision*100:.0f}% of the time — so front-desk staff can act on an alert without too many false alarms.")
+    if recall is not None:
+        lines.append(f"- **Recall for 'Cancelled' ({recall*100:.0f}%):** of all the reservations that actually do cancel, the system catches {recall*100:.0f}% of them in advance — roughly {round(recall*10)} out of every 10 lost bookings get flagged before they happen.")
+    return "In plain terms:\n\n" + "\n".join(lines)
+
+
+def interpret_feature_importance(imp_df):
+    top = imp_df.reset_index().sort_values("importance", ascending=False).head(4)
+    lines = []
+    for _, row in top.iterrows():
+        icon, text = explain_feature(row["feature"])
+        clean = row["feature"].replace("num__", "").replace("cat__", "")
+        lines.append(f"- {icon} **{clean}** ({row['importance']*100:.0f}% of the model's decision-making) — {text}")
+    return "In plain terms, these are the factors the model leans on most heavily across **all** reservations, not just one:\n\n" + "\n".join(lines)
 
 
 def recommend_actions(proba, raw_dict):
@@ -278,7 +358,7 @@ def financial_impact(proba, room_price, total_nights, refund_pct, recovery_cost,
     expected_loss = booking_value * proba
     refund_amount = booking_value * refund_pct / 100 * proba
     lost_occupancy_nights = total_nights * proba
-    net_savings = max(expected_loss - intervention_cost, 0)
+    net_savings = expected_loss - intervention_cost
     return {
         "booking_value": booking_value, "expected_loss": expected_loss,
         "refund_amount": refund_amount, "lost_occupancy_nights": lost_occupancy_nights,
@@ -340,6 +420,49 @@ def sanitize_for_pdf(text):
     return str(text).encode("latin-1", "ignore").decode("latin-1").strip()
 
 
+HOTEL_ADVICE_MAP = {
+    "lead_time": "This reservation was booked well in advance of arrival. Standard revenue-management practice for long-lead bookings is to send a courtesy confirmation email 2-3 weeks before arrival, and to request a partial deposit for reservations made more than 90 days out.",
+    "avg_price_per_room": "This is a higher-rate reservation. Consider a small complimentary amenity or early check-in offer contingent on reconfirmation — a common practice for protecting premium-rate bookings from cancellation.",
+    "market_segment_type": "Reservations from this booking channel typically carry higher cancellation risk. Apply the property's standard online/OTA guarantee policy, such as card verification or a rate-locked non-refundable option.",
+    "no_of_previous_cancellations": "This guest has a prior cancellation on file. Reservations or front-desk staff should reconfirm this booking personally by phone rather than relying on an automated reminder alone.",
+    "is_near_holiday": "This stay falls near a public holiday or peak period. Reconfirm the booking given the typically higher demand volatility around these dates.",
+    "arrival_month": "Seasonal timing is a contributing factor. Cross-check this arrival period against the property's historical occupancy and cancellation patterns.",
+    "arrival_date": "Seasonal timing is a contributing factor. Cross-check this arrival date against the property's historical occupancy and cancellation patterns.",
+    "total_nights": "Length of stay is a contributing factor. Longer stays can benefit from a mid-stay reconfirmation call closer to arrival.",
+    "required_car_parking_space": "Parking request status is a minor contributing factor here and does not typically warrant a dedicated intervention on its own.",
+    "no_of_children": "Party composition is a minor contributing factor here.",
+    "no_of_adults": "Party size is a minor contributing factor here.",
+}
+
+
+def generate_hotel_advice(contrib_df, max_items=3):
+    if contrib_df is None or len(contrib_df) == 0:
+        return []
+    risky = contrib_df[contrib_df["shap_value"] > 0].sort_values("shap_value", ascending=False).head(max_items)
+    advice = []
+    for _, row in risky.iterrows():
+        feat = row["feature"]
+        clean = feat.replace("num__", "").replace("cat__", "")
+        text = None
+        for key, txt in HOTEL_ADVICE_MAP.items():
+            if key in feat:
+                text = txt
+                break
+        if text is None:
+            text = f"This factor is contributing to elevated cancellation risk for this reservation; standard reconfirmation procedures are advised."
+        advice.append((clean, text))
+    return advice
+
+
+def advice_for_single_factor(feature_name, increases_risk):
+    if not increases_risk:
+        return "This factor is currently working in the guest's favor and is helping lower cancellation risk — no action needed here."
+    for key, txt in HOTEL_ADVICE_MAP.items():
+        if key in feature_name:
+            return txt
+    return "This factor is contributing to elevated cancellation risk for this reservation; standard reconfirmation procedures are advised."
+
+
 def build_pdf_report(booking_id, proba, risk_label, confidence, contrib_df, actions, fin):
     try:
         from fpdf import FPDF
@@ -347,40 +470,115 @@ def build_pdf_report(booking_id, proba, risk_label, confidence, contrib_df, acti
         return None
     pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, sanitize_for_pdf("Hotel Cancellation Risk Report"))
-    pdf.ln(12)
-    pdf.set_font("Helvetica", "", 11)
-    for line in [
-        f"Booking ID: {booking_id}", f"Cancellation Probability: {proba*100:.1f}%",
-        f"Risk Tier: {risk_label}", f"Model Confidence: {confidence:.1f}%"
-    ]:
-        pdf.cell(0, 8, sanitize_for_pdf(line)); pdf.ln(7)
+
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(0, 12, sanitize_for_pdf("Hotel Cancellation Risk Report"))
+    pdf.ln(14)
+
+    # ---- Summary table ----
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, sanitize_for_pdf("Reservation Summary")); pdf.ln(9)
+    pdf.set_font("Helvetica", "", 10)
+    summary_rows = [
+        ["Field", "Value"],
+        ["Reservation ID", sanitize_for_pdf(booking_id)],
+        ["Cancellation Probability", f"{proba*100:.1f}%"],
+        ["Risk Tier", sanitize_for_pdf(risk_label)],
+        ["Model Confidence", f"{confidence:.1f}%"],
+    ]
+    with pdf.table(col_widths=(60, 60), text_align="LEFT") as table:
+        for row_data in summary_rows:
+            row = table.row()
+            for datum in row_data:
+                row.cell(datum)
+    pdf.set_x(pdf.l_margin)
     pdf.ln(6)
-    pdf.set_font("Helvetica", "B", 13)
+
+    # ---- Contributing factors table ----
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.set_x(pdf.l_margin)
     pdf.cell(0, 8, sanitize_for_pdf("Top Contributing Factors")); pdf.ln(9)
     pdf.set_font("Helvetica", "", 10)
-    if contrib_df is not None:
+    if contrib_df is not None and len(contrib_df) > 0:
+        factor_rows = [["Factor", "Effect", "Impact Score"]]
         for _, row in contrib_df.iterrows():
-            direction = "increases" if row["shap_value"] > 0 else "decreases"
-            clean_name = row["feature"].replace("num__", "").replace("cat__", "")
-            pdf.cell(0, 7, sanitize_for_pdf(f"- {clean_name}: {direction} risk ({row['shap_value']:+.3f})")); pdf.ln(6)
+            direction = "Increases Risk" if row["shap_value"] > 0 else "Decreases Risk"
+            clean_name = sanitize_for_pdf(row["feature"].replace("num__", "").replace("cat__", ""))
+            factor_rows.append([clean_name, direction, f"{row['shap_value']:+.3f}"])
+        with pdf.table(col_widths=(90, 50, 40), text_align="LEFT") as table:
+            for row_data in factor_rows:
+                row = table.row()
+                for datum in row_data:
+                    row.cell(datum)
+    pdf.set_x(pdf.l_margin)
     pdf.ln(6)
-    pdf.set_font("Helvetica", "B", 13)
+
+    # ---- Recommended actions table ----
+    if pdf.get_y() > 220:
+        pdf.add_page()
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.set_x(pdf.l_margin)
     pdf.cell(0, 8, sanitize_for_pdf("Recommended Actions")); pdf.ln(9)
     pdf.set_font("Helvetica", "", 10)
-    for label, score, why in actions[:5]:
-        pdf.cell(0, 7, sanitize_for_pdf(f"- {label} (effectiveness: {score}%)")); pdf.ln(6)
+    action_rows = [["#", "Action", "Effectiveness"]]
+    for i, (label, score, why) in enumerate(actions[:5]):
+        action_rows.append([str(i + 1), sanitize_for_pdf(label), f"{score}%"])
+    with pdf.table(col_widths=(12, 128, 40), text_align="LEFT") as table:
+        for row_data in action_rows:
+            row = table.row()
+            for datum in row_data:
+                row.cell(datum)
+    pdf.set_x(pdf.l_margin)
     pdf.ln(6)
-    pdf.set_font("Helvetica", "B", 13)
+
+    # ---- Financial impact table ----
+    if pdf.get_y() > 200:
+        pdf.add_page()
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.set_x(pdf.l_margin)
     pdf.cell(0, 8, sanitize_for_pdf("Financial Impact (illustrative estimates)")); pdf.ln(9)
     pdf.set_font("Helvetica", "", 10)
-    for line in [
-        f"Expected loss: EUR {fin['expected_loss']:.2f}",
-        f"Estimated refund exposure: EUR {fin['refund_amount']:.2f}",
-        f"Net savings if intervention applied: EUR {fin['net_savings']:.2f}"
-    ]:
-        pdf.cell(0, 7, sanitize_for_pdf(line)); pdf.ln(6)
+    fin_rows = [
+        ["Metric", "Amount (EUR)"],
+        ["Expected Revenue Loss", f"{fin['expected_loss']:.2f}"],
+        ["Refund Exposure", f"{fin['refund_amount']:.2f}"],
+        ["Lost Occupancy (nights)", f"{fin['lost_occupancy_nights']:.2f}"],
+        ["Guest Lifetime Value at Risk", f"{fin['clv_at_risk']:.2f}"],
+        ["Intervention Cost", f"{fin['intervention_cost']:.2f}"],
+        ["Net Savings if Intervention Applied", f"{fin['net_savings']:.2f}"],
+    ]
+    with pdf.table(col_widths=(110, 70), text_align="LEFT") as table:
+        for row_data in fin_rows:
+            row = table.row()
+            for datum in row_data:
+                row.cell(datum)
+    pdf.set_x(pdf.l_margin)
+    pdf.ln(8)
+
+    # ---- Professional recommendations (hotel-operations advice) ----
+    if pdf.get_y() > 200:
+        pdf.add_page()
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.set_x(pdf.l_margin)
+    pdf.cell(0, 8, sanitize_for_pdf("Professional Recommendations to Reduce Cancellation Risk")); pdf.ln(9)
+    pdf.set_font("Helvetica", "", 10)
+    advice_list = generate_hotel_advice(contrib_df)
+    if advice_list:
+        for factor_name, advice_text in advice_list:
+            pdf.set_x(pdf.l_margin)
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.multi_cell(0, 6, sanitize_for_pdf(f"- {factor_name}"))
+            pdf.set_x(pdf.l_margin)
+            pdf.set_font("Helvetica", "", 10)
+            pdf.multi_cell(0, 6, sanitize_for_pdf(advice_text))
+            pdf.ln(2)
+    else:
+        pdf.set_x(pdf.l_margin)
+        pdf.multi_cell(0, 6, sanitize_for_pdf(
+            "No significant risk-elevating factors were identified for this reservation. "
+            "Standard reservation procedures are sufficient at this time."
+        ))
+
     return bytes(pdf.output())
 
 
@@ -427,7 +625,7 @@ def make_waterfall(contrib_df, base_rate_pct=32.8):
 # SIDEBAR
 # =======================================================================
 with st.sidebar:
-    st.markdown("### 🛡️ CancelSense ")
+    st.markdown("### 🛡️ CancelSense")
     st.caption("Machine Learning · Decision Support")
     st.divider()
     page = st.radio(
@@ -435,6 +633,7 @@ with st.sidebar:
         [
             "🏠 Dashboard",
             "➕ New Prediction",
+            "🔄 What-If Simulator",
             "📜 Prediction History",
             "📊 Analytics",
             "📈 Model Performance",
@@ -481,45 +680,45 @@ elif page == "➕ New Prediction":
     st.caption("Machine Learning · Smarter Decisions · Higher Revenue")
 
     with st.form("booking_form"):
-        section_header("📝 New Booking Details")
+        section_header("📝 New Reservation Details")
         col1, col2 = st.columns(2)
         with col1:
-            guest_name = st.text_input("Guest name (optional, for report only)", value="")
-            no_of_adults = st.number_input("Number of adults", min_value=0, max_value=10, value=2)
-            no_of_children = st.number_input("Number of children", min_value=0, max_value=10, value=0)
-            no_of_weekend_nights = st.number_input("Weekend nights", min_value=0, max_value=10, value=1)
-            no_of_week_nights = st.number_input("Week nights", min_value=0, max_value=15, value=2)
-            required_car_parking_space = st.selectbox("Requires car parking space?", ["No", "Yes"])
-            no_of_special_requests = st.number_input("Number of special requests", min_value=0, max_value=5, value=0)
+            guest_name = st.text_input("Guest Name (optional, for report only)", value="")
+            no_of_adults = st.number_input("Adults", min_value=0, max_value=10, value=2)
+            no_of_children = st.number_input("Children", min_value=0, max_value=10, value=0)
+            no_of_weekend_nights = st.number_input("Weekend Nights", min_value=0, max_value=10, value=1)
+            no_of_week_nights = st.number_input("Weekday Nights", min_value=0, max_value=15, value=2)
+            required_car_parking_space = st.selectbox("Parking Required?", ["No", "Yes"])
+            no_of_special_requests = st.number_input("Special Requests", min_value=0, max_value=5, value=0)
         with col2:
-            lead_time = st.number_input("Lead time (days)", min_value=0, max_value=500, value=50)
-            arrival_year = st.selectbox("Arrival year", [2017, 2018, 2026, 2027], index=1)
-            arrival_month = st.selectbox("Arrival month", list(range(1, 13)), index=6)
-            arrival_date = st.number_input("Arrival day of month", min_value=1, max_value=31, value=15)
-            repeated_guest = st.selectbox("Repeated guest?", ["No", "Yes"])
+            lead_time = st.number_input("Booking Window (days before arrival)", min_value=0, max_value=500, value=50)
+            arrival_year = st.selectbox("Arrival Year", [2017, 2018, 2026, 2027], index=1)
+            arrival_month = st.selectbox("Arrival Month", list(range(1, 13)), index=6)
+            arrival_date = st.number_input("Arrival Day of Month", min_value=1, max_value=31, value=15)
+            repeated_guest = st.selectbox("Repeat Guest?", ["No", "Yes"])
 
         col3, col4 = st.columns(2)
         with col3:
-            type_of_meal_plan = st.selectbox("Meal plan", cat_options.get("type_of_meal_plan", []))
-            room_type_reserved = st.selectbox("Room type", cat_options.get("room_type_reserved", []))
+            type_of_meal_plan = st.selectbox("Meal Plan", cat_options.get("type_of_meal_plan", []))
+            room_type_reserved = st.selectbox("Room Type", cat_options.get("room_type_reserved", []))
         with col4:
-            market_segment_type = st.selectbox("Market segment", cat_options.get("market_segment_type", []))
-            avg_price_per_room = st.number_input("Average price per room / ADR (EUR)", min_value=0.0, max_value=600.0, value=100.0, step=1.0)
+            market_segment_type = st.selectbox("Market Segment / Booking Channel", cat_options.get("market_segment_type", []))
+            avg_price_per_room = st.number_input("ADR – Average Daily Rate (EUR)", min_value=0.0, max_value=600.0, value=100.0, step=1.0)
 
         col5, col6 = st.columns(2)
         with col5:
-            no_of_previous_cancellations = st.number_input("Previous cancellations", min_value=0, max_value=50, value=0)
+            no_of_previous_cancellations = st.number_input("Previous Cancellations (Guest History)", min_value=0, max_value=50, value=0)
         with col6:
-            no_of_previous_bookings_not_canceled = st.number_input("Previous bookings NOT cancelled", min_value=0, max_value=100, value=0)
+            no_of_previous_bookings_not_canceled = st.number_input("Previous Completed Stays (Guest History)", min_value=0, max_value=100, value=0)
 
         st.markdown("**Financial assumptions** _(editable — used only for the Financial Impact estimate, not the model)_")
         col7, col8, col9 = st.columns(3)
         with col7:
-            refund_pct = st.slider("Refund policy (%)", 0, 100, 80)
+            refund_pct = st.slider("Refund Policy (%)", 0, 100, 80)
         with col8:
-            recovery_cost = st.number_input("Recovery cost (EUR)", min_value=0.0, value=25.0)
+            recovery_cost = st.number_input("Recovery Cost (EUR)", min_value=0.0, value=25.0)
         with col9:
-            intervention_cost = st.number_input("Intervention cost (EUR)", min_value=0.0, value=10.0)
+            intervention_cost = st.number_input("Intervention Cost (EUR)", min_value=0.0, value=10.0)
 
         submitted = st.form_submit_button("🔍 Assess Cancellation Risk", use_container_width=True)
 
@@ -553,8 +752,8 @@ elif page == "➕ New Prediction":
                 intervention_cost=intervention_cost
             )
             st.session_state.history.append({
-                "Booking ID": booking_id, "Guest": guest_name or "—", "Lead Time": lead_time,
-                "Price/Room": avg_price_per_room, "Market Segment": market_segment_type,
+                "Reservation ID": booking_id, "Guest": guest_name or "—", "Booking Window (Days)": lead_time,
+                "ADR (EUR)": avg_price_per_room, "Market Segment": market_segment_type,
                 "Risk %": round(proba * 100, 1), "Tier": risk_label
             })
 
@@ -573,14 +772,14 @@ elif page == "➕ New Prediction":
         # ---- 1. Executive Summary ----
         section_header("1️⃣ Executive Summary")
         ec = st.columns(6)
-        with ec[0]: kpi_card("Booking ID", booking_id)
+        with ec[0]: kpi_card("Reservation ID", booking_id)
         with ec[1]: kpi_card("Guest", d["guest_name"] or "—")
         with ec[2]: kpi_card("Check-in Date", f"{raw_input['arrival_year']}-{raw_input['arrival_month']:02d}-{raw_input['arrival_date']:02d}")
-        with ec[3]: kpi_card("Nights", str(total_nights))
+        with ec[3]: kpi_card("Length of Stay", f"{total_nights} nights")
         with ec[4]:
             pred_text = "Likely to Cancel" if proba >= 0.5 else "Likely to Keep"
             kpi_card("Prediction", pred_text, f"{risk_label} Risk")
-        with ec[5]: kpi_card("Recommended Action", actions[0][0] if actions else "Monitor")
+        with ec[5]: kpi_card("Front Desk Action", actions[0][0] if actions else "Monitor")
 
         # ---- 2. Cancellation Risk Assessment ----
         section_header("2️⃣ Cancellation Risk Assessment")
@@ -604,45 +803,35 @@ elif page == "➕ New Prediction":
         else:
             st.success("✅ This reservation is low risk. No action needed at this time.")
 
-        # ---- 3. Model Explanation ----
-        section_header("3️⃣ Model Explanation — Why This Prediction?")
+        # ---- 3. Key Contributing Factors ----
+        section_header("3️⃣ Key Contributing Factors")
+        st.caption("The factors below had the biggest influence on this specific reservation's risk score. Click **\"Why does this matter?\"** on any factor for hotel-specific guidance.")
         if contrib_df is not None:
-            wf = make_waterfall(contrib_df)
-            if wf is not None:
-                st.plotly_chart(wf, use_container_width=True)
+            n_cols = 3
+            rows_of_factors = [contrib_df.iloc[i:i + n_cols] for i in range(0, min(len(contrib_df), 6), n_cols)]
+            for chunk in rows_of_factors:
+                fc_cols = st.columns(n_cols)
+                for i, (_, row) in enumerate(chunk.iterrows()):
+                    icon, text = explain_feature(row["feature"])
+                    increases_risk = row["shap_value"] > 0
+                    cls = "risk-up" if increases_risk else "risk-down"
+                    badge_text = "⬆ INCREASES RISK" if increases_risk else "⬇ DECREASES RISK"
+                    friendly_name = friendly_feature_name(row["feature"])
+                    with fc_cols[i]:
+                        st.markdown(f"""
+                        <div class="factor-card {cls}">
+                            <div class="fc-badge">{badge_text}</div>
+                            <div class="fc-icon">{icon}</div>
+                            <div class="fc-title">{friendly_name}</div>
+                            <div class="fc-desc">{text}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        with st.expander("💡 Why does this matter?"):
+                            st.write(advice_for_single_factor(row["feature"], increases_risk))
+                            st.caption(f"Model impact score: {row['shap_value']:+.3f}")
 
-            ic1, ic2 = st.columns(2)
-            with ic1:
-                st.markdown("**⬆️ Increases Risk**")
-                for _, row in contrib_df[contrib_df["shap_value"] > 0].iterrows():
-                    clean = row["feature"].replace("num__", "").replace("cat__", "")
-                    st.markdown(f"<div class='factor-card risk-up'>🔴 {clean} <span style='color:#999;font-size:0.85rem;'>(+{row['shap_value']:.3f})</span></div>", unsafe_allow_html=True)
-            with ic2:
-                st.markdown("**⬇️ Decreases Risk**")
-                for _, row in contrib_df[contrib_df["shap_value"] < 0].iterrows():
-                    clean = row["feature"].replace("num__", "").replace("cat__", "")
-                    st.markdown(f"<div class='factor-card risk-down'>🟢 {clean} <span style='color:#999;font-size:0.85rem;'>({row['shap_value']:.3f})</span></div>", unsafe_allow_html=True)
-        else:
-            st.info("SHAP explanation unavailable — `shap` package not installed.")
-
-        # ---- 4. Key Contributing Factors ----
-        section_header("4️⃣ Key Contributing Factors")
-        if contrib_df is not None:
-            fc_cols = st.columns(min(len(contrib_df), 6))
-            for i, (_, row) in enumerate(contrib_df.head(6).iterrows()):
-                icon, text = explain_feature(row["feature"])
-                cls = "risk-up" if row["shap_value"] > 0 else "risk-down"
-                with fc_cols[i % 6]:
-                    st.markdown(f"""
-                    <div class="factor-card {cls}">
-                        <div style="font-size:1.3rem;">{icon}</div>
-                        <div style="font-weight:700;font-size:0.85rem;margin:4px 0;">{row['feature'].replace('num__','').replace('cat__','')}</div>
-                        <div style="font-size:0.78rem;color:#666;">{text}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-        # ---- 5. Recommended Actions ----
-        section_header("5️⃣ Recommended Actions (Ranked by Effectiveness)")
+        # ---- 4. Recommended Actions ----
+        section_header("4️⃣ Recommended Actions (Ranked by Effectiveness)")
         ac_cols = st.columns(3)
         for i, (label, score, why) in enumerate(actions):
             with ac_cols[i % 3]:
@@ -655,37 +844,100 @@ elif page == "➕ New Prediction":
                 </div>
                 """, unsafe_allow_html=True)
 
-        # ---- 6. Financial Impact ----
-        section_header("6️⃣ Financial Impact Analysis")
+        # ---- 5. Financial Impact ----
+        section_header("5️⃣ Financial Impact Analysis")
         st.caption("⚠️ Estimates based on the assumptions you set in the form — not values the model learned.")
         f1, f2, f3, f4 = st.columns(4)
-        with f1: kpi_card("Expected Revenue Loss", f"€{fin['expected_loss']:.2f}")
-        with f2: kpi_card("Refund Exposure", f"€{fin['refund_amount']:.2f}")
-        with f3: kpi_card("Lost Occupancy", f"{fin['lost_occupancy_nights']:.2f} nights")
-        with f4: kpi_card("CLV at Risk", f"€{fin['clv_at_risk']:.2f}")
+        with f1:
+            kpi_card("Expected Revenue Loss", f"€{fin['expected_loss']:.2f}",
+                      "Room revenue at risk if this reservation cancels", value_color="#d73027")
+        with f2:
+            kpi_card("Refund Exposure", f"€{fin['refund_amount']:.2f}",
+                      "Amount owed back to the guest under the refund policy", value_color="#d73027")
+        with f3:
+            kpi_card("Lost Occupancy", f"{fin['lost_occupancy_nights']:.2f} nights",
+                      "Room-nights that would sit empty if this reservation cancels", value_color="#d73027")
+        with f4:
+            kpi_card("Guest Lifetime Value (GLV) at Risk", f"€{fin['clv_at_risk']:.2f}",
+                      "Estimated future revenue from this guest that a cancellation could jeopardize", value_color="#d73027")
         g1, g2, g3 = st.columns(3)
-        with g1: kpi_card("Expected Loss", f"€{fin['expected_loss']:.2f}")
-        with g2: kpi_card("− Intervention Cost", f"€{fin['intervention_cost']:.2f}")
-        with g3: kpi_card("= Net Savings", f"€{fin['net_savings']:.2f}")
+        with g1:
+            kpi_card("Expected Loss", f"€{fin['expected_loss']:.2f}",
+                      "Revenue at risk before any staff intervention", value_color="#d73027")
+        with g2:
+            kpi_card("− Intervention Cost", f"€{fin['intervention_cost']:.2f}",
+                      "Cost of taking the recommended action (call, email, discount, etc.)", value_color="#f5a623")
+        with g3:
+            net_color = "#1a9850" if fin["net_savings"] >= 0 else "#d73027"
+            kpi_card("= Net Savings", f"€{fin['net_savings']:.2f}",
+                      "Revenue protected after subtracting the cost of intervention", value_color=net_color)
 
         pdf_bytes = build_pdf_report(booking_id, proba, risk_label, confidence, contrib_df, actions, fin)
         if pdf_bytes:
             st.download_button("📄 Download PDF Report", data=pdf_bytes,
                                 file_name=f"{booking_id}_risk_report.pdf", mime="application/pdf")
 
-        # ---- 7. What-If Simulator ----
-        section_header("7️⃣ What-If Analysis Simulator")
+        # ---- 6. Similar Historical Bookings ----
+        section_header("6️⃣ Similar Historical Bookings")
+        if dashboard_data is not None and "sample_bookings" in dashboard_data:
+            sample_df = pd.DataFrame(dashboard_data["sample_bookings"])
+            similar = find_similar_bookings(raw_input, sample_df, k=5)
+            if similar is not None:
+                display_cols = ["similarity_pct", "lead_time", "avg_price_per_room", "no_of_special_requests", "booking_status"]
+                display_cols = [c for c in display_cols if c in similar.columns]
+                show = similar[display_cols].rename(columns={
+                    "similarity_pct": "Similarity %", "lead_time": "Booking Window (Days)",
+                    "avg_price_per_room": "ADR (EUR)", "no_of_special_requests": "Special Requests",
+                    "booking_status": "Outcome"
+                })
+                show["Similarity %"] = show["Similarity %"].round(1)
+                st.dataframe(show, hide_index=True, use_container_width=True)
+                st.caption(f"Average similarity: {show['Similarity %'].mean():.1f}%")
+        else:
+            st.info("Similar-bookings data not available yet. Add `sample_bookings` to `dashboard_data.pkl`.")
+
+        # ---- 7. Counterfactual Explanations ----
+        section_header("7️⃣ Counterfactual Explanations — How to Reduce Risk")
+        scenarios = generate_counterfactuals(raw_input, proba)
+        for label, new_p in scenarios:
+            st.markdown(f"- **{label}** → risk moves from {proba*100:.1f}% to **{new_p*100:.1f}%**")
+
+    st.divider()
+    st.caption(f"Full prediction history is available on the **Prediction History** page.")
+    st.caption("This tool provides a statistical estimate based on historical booking patterns. It should support, not replace, staff judgement.")
+
+# =======================================================================
+# PAGE: WHAT-IF SIMULATOR
+# =======================================================================
+elif page == "🔄 What-If Simulator":
+    st.title("What-If Analysis Simulator")
+    st.caption("Adjust reservation details to see how the cancellation risk score would change.")
+
+    if "_last" not in st.session_state:
+        st.info("No active reservation yet. Go to **New Prediction** first to assess a booking, then return here to simulate changes to it.")
+    else:
+        d = st.session_state["_last"]
+        raw_input, proba = d["raw_input"], d["proba"]
+        risk_label, risk_color = d["risk_label"], d["risk_color"]
+        fin_base = financial_impact(
+            proba, raw_input["avg_price_per_room"], d["total_nights"],
+            d["refund_pct"], d["recovery_cost"], d["intervention_cost"],
+            raw_input["avg_price_per_room"] * (raw_input["no_of_previous_bookings_not_canceled"] + 1) * 2
+        )
+
+        st.caption(f"Simulating from Reservation **{d['booking_id']}** — current cancellation risk: **{proba*100:.1f}% ({risk_label})**")
+
         wcol1, wcol2 = st.columns(2)
         with wcol1:
-            w_lead_time = st.slider("Lead time (days)", 0, 500, int(raw_input["lead_time"]), key="w_lead")
-            w_price = st.slider("Room price / ADR (EUR)", 0.0, 600.0, float(raw_input["avg_price_per_room"]), key="w_price")
-            w_requests = st.slider("Special requests", 0, 5, int(raw_input["no_of_special_requests"]), key="w_req")
+            w_lead_time = st.slider("Booking Window (days before arrival)", 0, 500, int(raw_input["lead_time"]), key="w_lead")
+            w_price = st.slider("ADR – Average Daily Rate (EUR)", 0.0, 600.0, float(raw_input["avg_price_per_room"]), key="w_price")
+            w_requests = st.slider("Special Requests", 0, 5, int(raw_input["no_of_special_requests"]), key="w_req")
         with wcol2:
-            w_segment = st.selectbox("Market segment", cat_options.get("market_segment_type", []),
+            w_segment = st.selectbox("Market Segment / Booking Channel", cat_options.get("market_segment_type", []),
                                       index=cat_options.get("market_segment_type", []).index(raw_input["market_segment_type"]), key="w_seg")
-            w_meal = st.selectbox("Meal plan", cat_options.get("type_of_meal_plan", []),
+            w_meal = st.selectbox("Meal Plan", cat_options.get("type_of_meal_plan", []),
                                    index=cat_options.get("type_of_meal_plan", []).index(raw_input["type_of_meal_plan"]), key="w_meal")
-            w_parking = st.selectbox("Parking requested?", ["No", "Yes"], index=raw_input["required_car_parking_space"], key="w_park")
+            w_parking = st.selectbox("Parking Required?", ["No", "Yes"], index=raw_input["required_car_parking_space"], key="w_park")
 
         w_raw = dict(raw_input)
         w_raw.update({
@@ -697,41 +949,40 @@ elif page == "➕ New Prediction":
         new_label, new_color = get_risk_tier(new_proba)
 
         wc1, wc2, wc3 = st.columns(3)
-        with wc1: st.plotly_chart(make_gauge(proba, risk_label, risk_color), use_container_width=True, key="gauge_current")
-        with wc2: st.markdown("<div style='text-align:center;font-size:2rem;padding-top:70px;'>→</div>", unsafe_allow_html=True)
-        with wc3: st.plotly_chart(make_gauge(new_proba, new_label, new_color), use_container_width=True, key="gauge_new")
-        wsc1, wsc2 = st.columns(2)
-        with wsc1: kpi_card("Expected Risk Reduction", f"{max((proba-new_proba)*100,0):.0f}%")
-        with wsc2: kpi_card("Potential Savings", f"€{max(fin['expected_loss'] - fin['expected_loss']*(new_proba/max(proba,1e-6)), 0):.2f}")
+        with wc1:
+            st.plotly_chart(make_gauge(proba, risk_label, risk_color), use_container_width=True, key="gauge_current")
+            st.caption("**Today's risk** — the cancellation likelihood for this reservation exactly as it currently stands.")
+        with wc2:
+            st.markdown("<div style='text-align:center;font-size:2rem;padding-top:70px;'>→</div>", unsafe_allow_html=True)
+        with wc3:
+            st.plotly_chart(make_gauge(new_proba, new_label, new_color), use_container_width=True, key="gauge_new")
+            st.caption("**Simulated risk** — what the risk would become *if* the changes on the left were applied. Nothing is saved yet — this is a test only.")
 
-        # ---- 8. Similar Historical Bookings ----
-        section_header("8️⃣ Similar Historical Bookings")
-        if dashboard_data is not None and "sample_bookings" in dashboard_data:
-            sample_df = pd.DataFrame(dashboard_data["sample_bookings"])
-            similar = find_similar_bookings(raw_input, sample_df, k=5)
-            if similar is not None:
-                display_cols = ["similarity_pct", "lead_time", "avg_price_per_room", "no_of_special_requests", "booking_status"]
-                display_cols = [c for c in display_cols if c in similar.columns]
-                show = similar[display_cols].rename(columns={
-                    "similarity_pct": "Similarity %", "lead_time": "Lead Time",
-                    "avg_price_per_room": "Price/Room", "no_of_special_requests": "Special Requests",
-                    "booking_status": "Outcome"
-                })
-                show["Similarity %"] = show["Similarity %"].round(1)
-                st.dataframe(show, hide_index=True, use_container_width=True)
-                st.caption(f"Average similarity: {show['Similarity %'].mean():.1f}%")
+        risk_reduction = (proba - new_proba) * 100
+        potential_savings = fin_base['expected_loss'] - fin_base['expected_loss'] * (new_proba / max(proba, 1e-6))
+
+        if risk_reduction > 15:
+            interpretation = "This is a **substantial** improvement — worth actioning with the guest."
+        elif risk_reduction > 3:
+            interpretation = "This is a **moderate** improvement — a reasonable case for a light-touch intervention."
+        elif risk_reduction > 0:
+            interpretation = "This is a **small** improvement — the change helps, but only marginally."
+        elif risk_reduction == 0:
+            interpretation = "This change makes **no difference** to the cancellation risk."
         else:
-            st.info("Similar-bookings data not available yet. Add `sample_bookings` to `dashboard_data.pkl`.")
+            interpretation = "This change would actually **increase** cancellation risk — avoid this scenario."
 
-        # ---- 9. Counterfactual Explanations ----
-        section_header("9️⃣ Counterfactual Explanations — How to Reduce Risk")
-        scenarios = generate_counterfactuals(raw_input, proba)
-        for label, new_p in scenarios:
-            st.markdown(f"- **{label}** → risk moves from {proba*100:.1f}% to **{new_p*100:.1f}%**")
+        wsc1, wsc2 = st.columns(2)
+        with wsc1:
+            kpi_card("Expected Risk Reduction", f"{risk_reduction:+.0f} pts",
+                      "How many percentage points the cancellation risk would fall (or rise) under this scenario.",
+                      value_color="#1a9850" if risk_reduction > 0 else ("#d73027" if risk_reduction < 0 else None))
+        with wsc2:
+            kpi_card("Potential Savings", f"€{potential_savings:.2f}",
+                      "The euro value of room revenue this scenario could protect, based on the financial assumptions set for this reservation.",
+                      value_color="#1a9850" if potential_savings > 0 else ("#d73027" if potential_savings < 0 else None))
 
-    st.divider()
-    st.caption(f"Full prediction history is available on the **Prediction History** page.")
-    st.caption("This tool provides a statistical estimate based on historical booking patterns. It should support, not replace, staff judgement.")
+        st.info(f"**In plain terms:** {interpretation}")
 
 # =======================================================================
 # PAGE: PREDICTION HISTORY
@@ -835,11 +1086,15 @@ elif page == "📊 Analytics":
 # =======================================================================
 elif page == "📈 Model Performance":
     st.title("Model Performance")
+    st.caption("How reliable is the system, and what does that mean for day-to-day hotel operations?")
     if dashboard_data is None:
         st.info("Run the `dashboard_data.pkl` export cell in the notebook to enable this page.")
     else:
         st.write("**Model comparison (test set)**")
+        st.caption("Each row is a different predictive technique that was tried. The one in use today was chosen because it balances catching cancellations early against not overwhelming staff with false alarms.")
         st.dataframe(pd.DataFrame(dashboard_data["model_comparison"]), hide_index=True, use_container_width=True)
+
+        st.divider()
         pc1, pc2 = st.columns(2)
         with pc1:
             st.write(f"**Confusion Matrix — {best_model_name}**")
@@ -847,13 +1102,22 @@ elif page == "📈 Model Performance":
             st.dataframe(pd.DataFrame(cm, index=["Actual: Not Cancelled", "Actual: Cancelled"],
                                        columns=["Predicted: Not Cancelled", "Predicted: Cancelled"]),
                          use_container_width=True)
+            with st.expander("📖 What does this table mean?"):
+                st.markdown(interpret_confusion_matrix(cm))
         with pc2:
             st.write("**Classification Report**")
-            st.dataframe(pd.DataFrame(dashboard_data["classification_report"]).T.round(3), use_container_width=True)
+            report_dict = dashboard_data["classification_report"]
+            st.dataframe(pd.DataFrame(report_dict).T.round(3), use_container_width=True)
+            with st.expander("📖 What does this table mean?"):
+                st.markdown(interpret_classification_report(report_dict))
+
         st.divider()
         st.write("**Global Feature Importance (SHAP-derived)**")
+        st.caption("This chart is based on the entire historical dataset — it shows what drives cancellations across all reservations, not just the one you're currently viewing.")
         imp_df = pd.DataFrame(dashboard_data["feature_importance"]).set_index("feature")
         st.bar_chart(imp_df["importance"])
+        with st.expander("📖 What does this chart mean?"):
+            st.markdown(interpret_feature_importance(imp_df))
 
 # =======================================================================
 # PAGE: SETTINGS
