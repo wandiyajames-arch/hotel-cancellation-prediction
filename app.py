@@ -334,6 +334,26 @@ def interpret_feature_importance(imp_df):
     return "In plain terms, these are the factors the model leans on most heavily across **all** reservations, not just one:\n\n" + "\n".join(lines)
 
 
+def interpret_segment_chart(segment_series):
+    ranked = segment_series.sort_values(ascending=False)
+    highest_seg, highest_val = ranked.index[0], ranked.iloc[0]
+    lowest_seg, lowest_val = ranked.index[-1], ranked.iloc[-1]
+    gap = highest_val - lowest_val
+    lines = [
+        f"Each bar shows what **percentage of bookings from that channel end up cancelled**, based on historical data — "
+        f"the taller the bar, the riskier that booking channel tends to be.",
+        "",
+        f"- 🔴 **{highest_seg}** has the highest cancellation rate ({highest_val:.1f}%) — bookings from this channel "
+        f"are the most likely to fall through and deserve closer attention (e.g. reconfirmation, deposits).",
+        f"- 🟢 **{lowest_seg}** has the lowest cancellation rate ({lowest_val:.1f}%) — bookings from this channel "
+        f"are historically the most reliable and typically need little to no extra follow-up.",
+        "",
+        f"The gap between the riskiest and safest channel is **{gap:.1f} percentage points** — a meaningful difference "
+        f"that can help prioritize where front-desk and revenue teams focus their cancellation-prevention efforts."
+    ]
+    return "\n".join(lines)
+
+
 def recommend_actions(proba, raw_dict):
     actions = []
     if proba >= 0.60:
@@ -670,7 +690,11 @@ if page == "🏠 Dashboard":
 
     if dashboard_data is not None:
         section_header("Cancellation Rate by Market Segment")
-        st.bar_chart(pd.Series(dashboard_data["cancellation_by_segment"]).sort_values(ascending=False) * 100)
+        st.caption("How likely a booking is to cancel, broken down by the channel it was booked through.")
+        segment_series = pd.Series(dashboard_data["cancellation_by_segment"]).sort_values(ascending=False) * 100
+        st.bar_chart(segment_series)
+        with st.expander("📖 What does this chart mean?"):
+            st.markdown(interpret_segment_chart(segment_series))
 
 # =======================================================================
 # PAGE: NEW PREDICTION (single continuous scrolling page)
