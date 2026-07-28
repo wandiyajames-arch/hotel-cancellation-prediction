@@ -240,6 +240,42 @@ def get_shap_contributions(input_df, top_n=8):
     return contrib_df.drop(columns="abs_value")
 
 
+def get_full_shap_explanation(input_df):
+    """Returns every feature's SHAP contribution (not truncated) plus the model's true
+    base rate (explainer.expected_value), so base_value + sum(shap_values) reconstructs
+    the exact predicted probability - used to build a mathematically accurate waterfall."""
+    try:
+        import shap
+    except ImportError:
+        return None, None
+    model_step = pipeline.named_steps["model"]
+    preprocessor_step = pipeline.named_steps["preprocessor"]
+    if not hasattr(model_step, "feature_importances_"):
+        return None, None
+    transformed = preprocessor_step.transform(input_df[MODEL_COLUMNS])
+    if hasattr(transformed, "toarray"):
+        transformed = transformed.toarray()
+    feature_names = preprocessor_step.get_feature_names_out()
+    explainer = shap.TreeExplainer(model_step)
+    sv = explainer.shap_values(transformed)
+    ev = explainer.expected_value
+
+    if isinstance(sv, list):
+        row_values = sv[1][0]
+        base_value = ev[1] if hasattr(ev, "__len__") else ev
+    elif sv.ndim == 3:
+        row_values = sv[0, :, 1]
+        base_value = ev[1] if hasattr(ev, "__len__") else ev
+    else:
+        row_values = sv[0]
+        base_value = ev[0] if hasattr(ev, "__len__") else ev
+
+    full_df = pd.DataFrame({"feature": feature_names, "shap_value": row_values})
+    full_df["abs_value"] = full_df["shap_value"].abs()
+    full_df = full_df.sort_values("abs_value", ascending=False).drop(columns="abs_value").reset_index(drop=True)
+    return full_df, float(base_value)
+
+
 FEATURE_EXPLANATIONS = {
     "lead_time": ("📅", "Long lead time increases cancellation risk — plans are more likely to change the further out a booking sits."),
     "avg_price_per_room": ("💶", "Higher room price is associated with more price-sensitive cancellations."),
@@ -341,7 +377,7 @@ def interpret_segment_chart(segment_series):
     gap = highest_val - lowest_val
     lines = [
         f"Each bar shows what **percentage of bookings from that channel end up cancelled**, based on historical data — "
-        f"the taller the bar, the riskier that booking channel tends to be.",
+        f"the longer the bar, the riskier that booking channel tends to be.",
         "",
         f"- 🔴 **{highest_seg}** has the highest cancellation rate ({highest_val:.1f}%) — bookings from this channel "
         f"are the most likely to fall through and deserve closer attention (e.g. reconfirmation, deposits).",
@@ -414,6 +450,65 @@ def generate_counterfactuals(raw_dict, base_proba):
 
     scenarios.sort(key=lambda x: x[1])
     return scenarios
+
+
+def find_minimal_reduction(raw_dict, feature, target_threshold, max_pct=90, step=10):
+    """Scans reduction percentages for a numeric feature (e.g. lead_time, avg_price_per_room)
+    and returns the SMALLEST reduction that drops the prediction to/below target_threshold.
+    This is a genuine target-seeking search, not a single fixed guess: it scans multiple
+    reduction levels and reports the least-drastic one that actually crosses the tier boundary,
+    which is more useful to a hotel than an arbitrary "try -60%" scenario."""
+    current_val = raw_dict[feature]
+    if current_val <= 0:
+        return None
+    for pct in range(step, max_pct + 1, step):
+        cf = dict(raw_dict)
+        cf[feature] = current_val * (1 - pct / 100)
+        p, _ = run_prediction(cf)
+        if p <= target_threshold:
+            return {"pct_reduction": pct, "new_value": cf[feature], "new_proba": p}
+    return None
+
+
+def sweep_categorical_feature(raw_dict, feature, options):
+    """Tests every available option for a categorical feature (e.g. every market segment,
+    every meal plan) and returns all results ranked from lowest to highest resulting risk -
+    a full comparison rather than testing a single hand-picked alternative."""
+    results = []
+    for opt in options:
+        if opt == raw_dict.get(feature):
+            continue
+        cf = dict(raw_dict)
+        cf[feature] = opt
+        p, _ = run_prediction(cf)
+        results.append((opt, p))
+    results.sort(key=lambda x: x[1])
+    return results
+
+
+def richer_counterfactual_search(raw_dict, base_proba):
+    """Combines target-seeking numeric search with a full categorical sweep to produce a
+    richer counterfactual analysis than a fixed set of pre-guessed scenarios."""
+    result = {"tier_target": None, "lead_time_search": None, "price_search": None,
+              "segment_sweep": [], "meal_plan_sweep": []}
+
+    if base_proba >= 0.60:
+        result["tier_target"] = ("High", "Medium", 0.60)
+    elif base_proba >= 0.30:
+        result["tier_target"] = ("Medium", "Low", 0.30)
+
+    if result["tier_target"] is not None:
+        _, _, threshold = result["tier_target"]
+        result["lead_time_search"] = find_minimal_reduction(raw_dict, "lead_time", threshold)
+        result["price_search"] = find_minimal_reduction(raw_dict, "avg_price_per_room", threshold)
+
+    result["segment_sweep"] = sweep_categorical_feature(
+        raw_dict, "market_segment_type", cat_options.get("market_segment_type", [])
+    )
+    result["meal_plan_sweep"] = sweep_categorical_feature(
+        raw_dict, "type_of_meal_plan", cat_options.get("type_of_meal_plan", [])
+    )
+    return result
 
 
 def find_similar_bookings(raw_dict, sample_df, k=5):
@@ -641,11 +736,50 @@ def make_waterfall(contrib_df, base_rate_pct=32.8):
     return fig
 
 
+def make_full_waterfall(full_contrib_df, base_value, top_n=10):
+    """A mathematically accurate SHAP waterfall: starts at the model's true base rate,
+    adds each of the top_n most influential factors, buckets everything else into
+    'All other factors combined', and ends exactly at the real predicted probability."""
+    if full_contrib_df is None or len(full_contrib_df) == 0:
+        return None
+
+    d = full_contrib_df.copy()
+    top = d.head(top_n)
+    rest = d.iloc[top_n:]
+    rest_sum = rest["shap_value"].sum() if len(rest) > 0 else 0.0
+
+    labels = [friendly_feature_name(f) for f in top["feature"]]
+    values = (top["shap_value"] * 100).tolist()
+
+    if len(rest) > 0:
+        labels.append(f"All other factors ({len(rest)} combined)")
+        values.append(rest_sum * 100)
+
+    final_pct = (base_value + full_contrib_df["shap_value"].sum()) * 100
+
+    fig = go.Figure(go.Waterfall(
+        orientation="v",
+        x=["Base rate"] + labels + ["Final risk"],
+        y=[base_value * 100] + values + [final_pct],
+        measure=["absolute"] + ["relative"] * len(values) + ["total"],
+        connector={"line": {"color": "#cccccc"}},
+        increasing={"marker": {"color": "#d73027"}},
+        decreasing={"marker": {"color": "#1a9850"}},
+        totals={"marker": {"color": "#4c72b0"}},
+    ))
+    fig.update_layout(
+        height=380, margin=dict(l=10, r=10, t=10, b=80), showlegend=False,
+        yaxis_title="Cancellation risk (%)",
+        xaxis_tickangle=-30,
+    )
+    return fig
+
+
 # =======================================================================
 # SIDEBAR
 # =======================================================================
 with st.sidebar:
-    st.markdown("### 🛡️ CancelSense")
+    st.markdown("### 🛡️ StayShield")
     st.caption("Machine Learning · Decision Support")
     st.divider()
     page = st.radio(
@@ -670,29 +804,65 @@ with st.sidebar:
 # PAGE: DASHBOARD (landing overview)
 # =======================================================================
 if page == "🏠 Dashboard":
-    st.title("Dashboard")
-    st.caption("Machine Learning · Smarter Decisions · Higher Revenue")
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, #0f172a 0%, #1e2761 100%);
+                border-radius: 16px; padding: 34px 36px; margin-bottom: 24px;">
+        <div style="font-size: 2.1rem; font-weight: 800; color: #ffffff; margin-bottom: 4px;">
+            🏨 Welcome back
+        </div>
+        <div style="font-size: 1rem; color: #cadcfc;">
+            Machine Learning · Smarter Decisions · Higher Revenue
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     if dashboard_data is not None:
         m1, m2, m3, m4 = st.columns(4)
-        with m1: kpi_card("Total Historical Bookings", f"{dashboard_data['total_bookings']:,}")
-        with m2: kpi_card("Overall Cancellation Rate", f"{dashboard_data['overall_cancellation_rate']*100:.1f}%")
-        with m3: kpi_card("Model in Use", best_model_name)
-        with m4: kpi_card("Predictions This Session", str(len(st.session_state.history)))
+        with m1: kpi_card("📚 Total Historical Bookings", f"{dashboard_data['total_bookings']:,}")
+        with m2: kpi_card("⚠️ Overall Cancellation Rate", f"{dashboard_data['overall_cancellation_rate']*100:.1f}%", value_color="#d73027")
+        with m3: kpi_card("🧠 Model in Use", best_model_name)
+        with m4: kpi_card("🔮 Predictions This Session", str(len(st.session_state.history)))
     else:
         st.info("Run the `dashboard_data.pkl` export cell in the notebook to populate these summary stats.")
 
-    section_header("Recent Predictions (this session)")
+    section_header("📜 Recent Predictions (this session)")
     if st.session_state.history:
         st.dataframe(pd.DataFrame(st.session_state.history).tail(5), hide_index=True, use_container_width=True)
     else:
-        st.caption("No predictions made yet this session. Go to **New Prediction** to assess a booking.")
+        st.markdown("""
+        <div style="background:#f7f9fb; border:1px dashed #cbd5e1; border-radius:12px;
+                    padding:28px; text-align:center; color:#6b7280;">
+            <div style="font-size:2rem; margin-bottom:8px;">🔍</div>
+            <div style="font-weight:600; margin-bottom:4px;">No predictions made yet this session</div>
+            <div style="font-size:0.85rem;">Go to <b>New Prediction</b> in the sidebar to assess your first booking.</div>
+        </div>
+        """, unsafe_allow_html=True)
 
     if dashboard_data is not None:
-        section_header("Cancellation Rate by Market Segment")
+        section_header("📊 Cancellation Rate by Market Segment")
         st.caption("How likely a booking is to cancel, broken down by the channel it was booked through.")
-        segment_series = pd.Series(dashboard_data["cancellation_by_segment"]).sort_values(ascending=False) * 100
-        st.bar_chart(segment_series)
+        segment_series = pd.Series(dashboard_data["cancellation_by_segment"]).sort_values(ascending=True) * 100
+
+        bar_colors = ["#d73027" if v == segment_series.max() else "#1c7293" for v in segment_series.values]
+        fig = go.Figure(go.Bar(
+            x=segment_series.values,
+            y=segment_series.index,
+            orientation="h",
+            marker=dict(color=bar_colors, line=dict(width=0)),
+            text=[f"{v:.1f}%" for v in segment_series.values],
+            textposition="outside",
+            textfont=dict(size=14, color="#1a1a2e"),
+        ))
+        fig.update_layout(
+            height=320,
+            margin=dict(l=10, r=40, t=10, b=10),
+            xaxis=dict(showgrid=False, visible=False),
+            yaxis=dict(showgrid=False, tickfont=dict(size=13, color="#1a1a2e")),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            bargap=0.35,
+        )
+        st.plotly_chart(fig, use_container_width=True)
         with st.expander("📖 What does this chart mean?"):
             st.markdown(interpret_segment_chart(segment_series))
 
@@ -705,44 +875,48 @@ elif page == "➕ New Prediction":
 
     with st.form("booking_form"):
         section_header("📝 New Reservation Details")
-        col1, col2 = st.columns(2)
-        with col1:
-            guest_name = st.text_input("Guest Name (optional, for report only)", value="")
-            no_of_adults = st.number_input("Adults", min_value=0, max_value=10, value=2)
-            no_of_children = st.number_input("Children", min_value=0, max_value=10, value=0)
-            no_of_weekend_nights = st.number_input("Weekend Nights", min_value=0, max_value=10, value=1)
-            no_of_week_nights = st.number_input("Weekday Nights", min_value=0, max_value=15, value=2)
-            required_car_parking_space = st.selectbox("Parking Required?", ["No", "Yes"])
-            no_of_special_requests = st.number_input("Special Requests", min_value=0, max_value=5, value=0)
-        with col2:
-            lead_time = st.number_input("Booking Window (days before arrival)", min_value=0, max_value=500, value=50)
-            arrival_year = st.selectbox("Arrival Year", [2017, 2018, 2026, 2027], index=1)
-            arrival_month = st.selectbox("Arrival Month", list(range(1, 13)), index=6)
-            arrival_date = st.number_input("Arrival Day of Month", min_value=1, max_value=31, value=15)
-            repeated_guest = st.selectbox("Repeat Guest?", ["No", "Yes"])
+        st.caption("Enter the key details below. Everything else uses a sensible default — expand the sections underneath only if you need to change them.")
 
-        col3, col4 = st.columns(2)
-        with col3:
-            type_of_meal_plan = st.selectbox("Meal Plan", cat_options.get("type_of_meal_plan", []))
-            room_type_reserved = st.selectbox("Room Type", cat_options.get("room_type_reserved", []))
-        with col4:
-            market_segment_type = st.selectbox("Market Segment / Booking Channel", cat_options.get("market_segment_type", []))
+        qc1, qc2 = st.columns(2)
+        with qc1:
+            lead_time = st.number_input("Booking Window (days before arrival)", min_value=0, max_value=500, value=50,
+                                         help="The single biggest driver of cancellation risk.")
             avg_price_per_room = st.number_input("ADR – Average Daily Rate (EUR)", min_value=0.0, max_value=600.0, value=100.0, step=1.0)
+            market_segment_type = st.selectbox("Market Segment / Booking Channel", cat_options.get("market_segment_type", []))
+        with qc2:
+            arrival_month = st.selectbox("Arrival Month", list(range(1, 13)), index=6)
+            no_of_special_requests = st.number_input("Special Requests", min_value=0, max_value=5, value=0)
 
-        col5, col6 = st.columns(2)
-        with col5:
-            no_of_previous_cancellations = st.number_input("Previous Cancellations (Guest History)", min_value=0, max_value=50, value=0)
-        with col6:
-            no_of_previous_bookings_not_canceled = st.number_input("Previous Completed Stays (Guest History)", min_value=0, max_value=100, value=0)
+        with st.expander("⚙️ Advanced reservation details (optional — sensible defaults already applied)"):
+            col1, col2 = st.columns(2)
+            with col1:
+                guest_name = st.text_input("Guest Name (optional, for report only)", value="")
+                no_of_adults = st.number_input("Adults", min_value=0, max_value=10, value=2)
+                no_of_children = st.number_input("Children", min_value=0, max_value=10, value=0)
+                no_of_weekend_nights = st.number_input("Weekend Nights", min_value=0, max_value=10, value=1)
+                no_of_week_nights = st.number_input("Weekday Nights", min_value=0, max_value=15, value=2)
+                required_car_parking_space = st.selectbox("Parking Required?", ["No", "Yes"])
+            with col2:
+                arrival_year = st.selectbox("Arrival Year", [2017, 2018, 2026, 2027], index=1)
+                arrival_date = st.number_input("Arrival Day of Month", min_value=1, max_value=31, value=15)
+                repeated_guest = st.selectbox("Repeat Guest?", ["No", "Yes"])
+                type_of_meal_plan = st.selectbox("Meal Plan", cat_options.get("type_of_meal_plan", []))
+                room_type_reserved = st.selectbox("Room Type", cat_options.get("room_type_reserved", []))
 
-        st.markdown("**Financial assumptions** _(editable — used only for the Financial Impact estimate, not the model)_")
-        col7, col8, col9 = st.columns(3)
-        with col7:
-            refund_pct = st.slider("Refund Policy (%)", 0, 100, 80)
-        with col8:
-            recovery_cost = st.number_input("Recovery Cost (EUR)", min_value=0.0, value=25.0)
-        with col9:
-            intervention_cost = st.number_input("Intervention Cost (EUR)", min_value=0.0, value=10.0)
+            col5, col6 = st.columns(2)
+            with col5:
+                no_of_previous_cancellations = st.number_input("Previous Cancellations (Guest History)", min_value=0, max_value=50, value=0)
+            with col6:
+                no_of_previous_bookings_not_canceled = st.number_input("Previous Completed Stays (Guest History)", min_value=0, max_value=100, value=0)
+
+        with st.expander("💶 Financial assumptions (optional — used only for the Financial Impact estimate, not the model)"):
+            col7, col8, col9 = st.columns(3)
+            with col7:
+                refund_pct = st.slider("Refund Policy (%)", 0, 100, 80)
+            with col8:
+                recovery_cost = st.number_input("Recovery Cost (EUR)", min_value=0.0, value=25.0)
+            with col9:
+                intervention_cost = st.number_input("Intervention Cost (EUR)", min_value=0.0, value=10.0)
 
         submitted = st.form_submit_button("🔍 Assess Cancellation Risk", use_container_width=True)
 
@@ -788,6 +962,7 @@ elif page == "➕ New Prediction":
         total_nights, booking_id = d["total_nights"], d["booking_id"]
 
         contrib_df = get_shap_contributions(engineer_features(pd.DataFrame([raw_input])))
+        full_shap_df, shap_base_value = get_full_shap_explanation(engineer_features(pd.DataFrame([raw_input])))
         actions = recommend_actions(proba, raw_input)
         clv = raw_input["avg_price_per_room"] * (raw_input["no_of_previous_bookings_not_canceled"] + 1) * 2
         fin = financial_impact(proba, raw_input["avg_price_per_room"], total_nights,
@@ -853,6 +1028,23 @@ elif page == "➕ New Prediction":
                         with st.expander("💡 Why does this matter?"):
                             st.write(advice_for_single_factor(row["feature"], increases_risk))
                             st.caption(f"Model impact score: {row['shap_value']:+.3f}")
+
+            if full_shap_df is not None and shap_base_value is not None:
+                with st.expander(f"🔬 View the full SHAP waterfall — all {len(full_shap_df)} factors, mathematically exact"):
+                    st.caption(
+                        "This chart starts at the model's average risk across every reservation it was trained on, "
+                        "then adds or subtracts each factor's contribution one by one until it reaches this "
+                        "reservation's exact predicted risk — nothing is approximated or rounded along the way."
+                    )
+                    wf_fig = make_full_waterfall(full_shap_df, shap_base_value, top_n=10)
+                    if wf_fig is not None:
+                        st.plotly_chart(wf_fig, use_container_width=True)
+                    st.dataframe(
+                        full_shap_df.assign(feature=full_shap_df["feature"].apply(friendly_feature_name))
+                                    .rename(columns={"feature": "Factor", "shap_value": "Impact on risk"})
+                                    .round(4),
+                        hide_index=True, use_container_width=True, height=250
+                    )
 
         # ---- 4. Recommended Actions ----
         section_header("4️⃣ Recommended Actions (Ranked by Effectiveness)")
@@ -923,8 +1115,54 @@ elif page == "➕ New Prediction":
         # ---- 7. Counterfactual Explanations ----
         section_header("7️⃣ Counterfactual Explanations — How to Reduce Risk")
         scenarios = generate_counterfactuals(raw_input, proba)
+        st.write("**Illustrative scenarios**")
         for label, new_p in scenarios:
             st.markdown(f"- **{label}** → risk moves from {proba*100:.1f}% to **{new_p*100:.1f}%**")
+
+        rc_search = richer_counterfactual_search(raw_input, proba)
+        if rc_search["tier_target"] is not None:
+            from_tier, to_tier, threshold = rc_search["tier_target"]
+            st.write(f"**Minimal change needed to drop from {from_tier} to {to_tier} risk (below {threshold*100:.0f}%)**")
+
+            found_any = False
+            lt_result = rc_search["lead_time_search"]
+            if lt_result is not None:
+                found_any = True
+                st.markdown(
+                    f"- Reducing the **booking window** by just **{lt_result['pct_reduction']}%** "
+                    f"(to {lt_result['new_value']:.0f} days) would be enough on its own — dropping risk to "
+                    f"**{lt_result['new_proba']*100:.1f}%**."
+                )
+            price_result = rc_search["price_search"]
+            if price_result is not None:
+                found_any = True
+                st.markdown(
+                    f"- Reducing the **room rate** by just **{price_result['pct_reduction']}%** "
+                    f"(to €{price_result['new_value']:.2f}) would be enough on its own — dropping risk to "
+                    f"**{price_result['new_proba']*100:.1f}%**."
+                )
+            if not found_any:
+                st.info(
+                    "No single change to booking window or room rate alone (even a 90% reduction) is enough to "
+                    "drop this reservation into a lower risk tier — its risk comes from a *combination* of "
+                    "factors. A combined intervention (see the illustrative scenarios above) is more likely to help."
+                )
+
+            with st.expander("🔍 See how every booking channel and meal plan would change this reservation's risk"):
+                seg_col, meal_col = st.columns(2)
+                with seg_col:
+                    st.write("**If this booking came through a different channel:**")
+                    seg_df = pd.DataFrame(rc_search["segment_sweep"], columns=["Market Segment", "New Risk"])
+                    seg_df["New Risk"] = (seg_df["New Risk"] * 100).round(1)
+                    st.dataframe(seg_df, hide_index=True, use_container_width=True)
+                with meal_col:
+                    st.write("**If this booking had a different meal plan:**")
+                    meal_df = pd.DataFrame(rc_search["meal_plan_sweep"], columns=["Meal Plan", "New Risk"])
+                    meal_df["New Risk"] = (meal_df["New Risk"] * 100).round(1)
+                    st.dataframe(meal_df, hide_index=True, use_container_width=True)
+                st.caption(f"For comparison, this reservation's actual current risk is {proba*100:.1f}%.")
+        else:
+            st.success("This reservation is already in the lowest risk tier — no further reduction needed.")
 
     st.divider()
     st.caption(f"Full prediction history is available on the **Prediction History** page.")
